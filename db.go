@@ -4,6 +4,7 @@ package dynamo
 import (
 	"fmt"
 
+	"github.com/aws/aws-dax-go/dax"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -19,6 +20,16 @@ type DB struct {
 func New(p client.ConfigProvider, cfgs ...*aws.Config) *DB {
 	db := &DB{
 		dynamodb.New(p, cfgs...),
+	}
+	return db
+}
+
+// NewDax creates a new dax client with the given configuration
+func NewDax(cfg dax.Config) *DB {
+	dax, _ := dax.New(cfg)
+
+	db := &DB{
+		dax,
 	}
 	return db
 }

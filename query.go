@@ -257,6 +257,76 @@ func (q *Query) OneWithContext(ctx aws.Context, out interface{}) error {
 	return unmarshalItem(res.Items[0], out)
 }
 
+// OneItem returns item map from db
+func (q *Query) OneItem() (map[string]*dynamodb.AttributeValue, error) {
+	ctx, cancel := defaultContext()
+	defer cancel()
+	return q.OneItemWithContext(ctx)
+}
+
+func (q *Query) OneItemWithContext(ctx aws.Context) (map[string]*dynamodb.AttributeValue, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	// Can we use the GetItem API?
+	if q.canGetItem() {
+		req := q.getItemInput()
+
+		var res *dynamodb.GetItemOutput
+		err := retry(ctx, func() error {
+			var err error
+			res, err = q.table.db.client.GetItemWithContext(ctx, req)
+			if err != nil {
+				return err
+			}
+			if res.Item == nil {
+				return ErrNotFound
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if q.cc != nil {
+			addConsumedCapacity(q.cc, res.ConsumedCapacity)
+		}
+
+		return res.Item, nil
+	}
+
+	// If not, try a Query.
+	req := q.queryInput()
+
+	var res *dynamodb.QueryOutput
+	err := retry(ctx, func() error {
+		var err error
+		res, err = q.table.db.client.QueryWithContext(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case len(res.Items) == 0:
+			return ErrNotFound
+		case len(res.Items) > 1:
+			return ErrTooMany
+		case res.LastEvaluatedKey != nil && q.searchLimit != 0:
+			return ErrTooMany
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if q.cc != nil {
+		addConsumedCapacity(q.cc, res.ConsumedCapacity)
+	}
+
+	return res.Items[0], nil
+}
+
 // Count executes this request, returning the number of results.
 func (q *Query) Count() (int64, error) {
 	ctx, cancel := defaultContext()
@@ -509,8 +579,8 @@ func (q *Query) keyConditions() map[string]*dynamodb.Condition {
 
 func (q *Query) getItemInput() *dynamodb.GetItemInput {
 	req := &dynamodb.GetItemInput{
-		TableName: &q.table.name,
-		Key:       q.keys(),
+		TableName:                &q.table.name,
+		Key:                      q.keys(),
 		ExpressionAttributeNames: q.nameExpr,
 	}
 	if q.consistent {
@@ -532,8 +602,8 @@ func (q *Query) getTxItem() (*dynamodb.TransactGetItem, error) {
 	input := q.getItemInput()
 	return &dynamodb.TransactGetItem{
 		Get: &dynamodb.Get{
-			TableName: input.TableName,
-			Key:       input.Key,
+			TableName:                input.TableName,
+			Key:                      input.Key,
 			ExpressionAttributeNames: input.ExpressionAttributeNames,
 			ProjectionExpression:     input.ProjectionExpression,
 		},
@@ -552,7 +622,7 @@ func (q *Query) keys() map[string]*dynamodb.AttributeValue {
 
 func (q *Query) keysAndAttribs() *dynamodb.KeysAndAttributes {
 	kas := &dynamodb.KeysAndAttributes{
-		Keys: []map[string]*dynamodb.AttributeValue{q.keys()},
+		Keys:                     []map[string]*dynamodb.AttributeValue{q.keys()},
 		ExpressionAttributeNames: q.nameExpr,
 		ConsistentRead:           &q.consistent,
 	}
