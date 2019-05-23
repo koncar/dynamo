@@ -25,11 +25,18 @@ func New(p client.ConfigProvider, cfgs ...*aws.Config) *DB {
 }
 
 // NewDax creates a new dax client with the given configuration
-func NewDax(cfg dax.Config) *DB {
-	dax, _ := dax.New(cfg)
+func NewDax(daxEndpoint string, awsRegion string) *DB {
+	fmt.Println(daxEndpoint)
+	cfgData := dax.DefaultConfig()
+	cfgData.HostPorts = []string{daxEndpoint}
+	cfgData.Region = awsRegion
+	// cfgData.Credentials = credentials.NewSharedCredentials("", "default")
+	// DATA = dynamo.NewDax(cfgData).Table(dataTableName)
+
+	client, _ := dax.New(cfgData)
 
 	db := &DB{
-		dax,
+		client,
 	}
 	return db
 }
