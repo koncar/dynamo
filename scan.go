@@ -111,6 +111,11 @@ func (s *Scan) All(out interface{}) error {
 	_, err := s.AllWithLastEvaluatedKeyContext(ctx, out)
 	return err
 }
+func (s *Scan) AllItems() ([]map[string]*dynamodb.AttributeValue, PagingKey, error) {
+	ctx, cancel := defaultContext()
+	defer cancel()
+	return s.AllItemsWithLastEvaluatedKeyContext(ctx)
+}
 
 // AllWithContext executes this request and unmarshals all results to out, which must be a pointer to a slice.
 func (s *Scan) AllWithContext(ctx aws.Context, out interface{}) error {
@@ -137,6 +142,20 @@ func (s *Scan) AllWithLastEvaluatedKeyContext(ctx aws.Context, out interface{}) 
 	for itr.NextWithContext(ctx, out) {
 	}
 	return itr.LastEvaluatedKey(), itr.Err()
+}
+
+func (s *Scan) AllItemsWithLastEvaluatedKeyContext(ctx aws.Context) ([]map[string]*dynamodb.AttributeValue, PagingKey, error) {
+	itr := &scanIter{
+		scan:      s,
+		unmarshal: unmarshalAppend,
+		err:       s.err,
+	}
+	results := []map[string]*dynamodb.AttributeValue{}
+
+	for item, hasNext := itr.NextItemWithContext(ctx); hasNext; item, hasNext = itr.NextItemWithContext(ctx) {
+		results = append(results, item)
+	}
+	return results, itr.LastEvaluatedKey(), itr.Err()
 }
 
 func (s *Scan) scanInput() *dynamodb.ScanInput {
@@ -257,6 +276,67 @@ func (itr *scanIter) NextWithContext(ctx aws.Context, out interface{}) bool {
 	itr.idx++
 	itr.n++
 	return itr.err == nil
+}
+
+func (itr *scanIter) NextItemWithContext(ctx aws.Context) (map[string]*dynamodb.AttributeValue, bool) {
+	// stop if we have an error
+	if itr.err != nil {
+		return nil, false
+	}
+
+	// stop if exceed limit
+	if itr.scan.limit > 0 && itr.n == itr.scan.limit {
+		return nil, false
+	}
+
+	// can we use results we already have?
+	if itr.output != nil && itr.idx < len(itr.output.Items) {
+		item := itr.output.Items[itr.idx]
+		itr.idx++
+		itr.n++
+		return item, itr.err == nil
+	}
+
+	// new scan
+	if itr.input == nil {
+		itr.input = itr.scan.scanInput()
+	}
+	if itr.output != nil && itr.idx >= len(itr.output.Items) {
+		// have we exhausted all results?
+		if itr.output.LastEvaluatedKey == nil || itr.scan.searchLimit > 0 {
+			return nil, false
+		}
+
+		// no, prepare next request and reset index
+		itr.input.ExclusiveStartKey = itr.output.LastEvaluatedKey
+		itr.idx = 0
+	}
+
+	itr.err = retry(ctx, func() error {
+		var err error
+		itr.output, err = itr.scan.table.db.client.ScanWithContext(ctx, itr.input)
+		return err
+	})
+
+	if itr.err != nil {
+		return nil, false
+	}
+
+	if itr.scan.cc != nil {
+		addConsumedCapacity(itr.scan.cc, itr.output.ConsumedCapacity)
+	}
+
+	if len(itr.output.Items) == 0 {
+		if itr.output.LastEvaluatedKey != nil {
+			return itr.NextItemWithContext(ctx)
+		}
+		return nil, false
+	}
+
+	item := itr.output.Items[itr.idx]
+	itr.idx++
+	itr.n++
+	return item, itr.err == nil
 }
 
 // Err returns the error encountered, if any.
